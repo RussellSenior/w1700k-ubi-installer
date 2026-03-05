@@ -226,13 +226,19 @@ install_write_recovery() {
 }
 
 install_write_openwrt() {
-  sysupgrade_image="$1"
-
   ubimkvol /dev/ubi0 -n 4 -s 126976 -N fit
   ubi_mknod ubi0_4
 
-  log "Installing sysupgrade image..."
-  sysupgrade -F "$sysupgrade_image"
+  # Load OpenWrt upgrade helpers only when needed
+  . /lib/functions.sh
+  . /lib/upgrade/common.sh
+  . /lib/upgrade/nand.sh
+  . /lib/upgrade/fit.sh
+
+  export CI_KERNPART=fit CI_UBIPART=ubi
+
+  log "Installing sysupgrade image via nand_upgrade_fit..."
+  nand_upgrade_fit "$1" cat
 }
 
 require_file "$RECOVERY_IMAGE"
@@ -256,6 +262,9 @@ install_write_factory "$FACTORY_BIN"
 install_write_recovery "$RECOVERY_IMAGE"
 install_write_openwrt "$SYSUPGRADE_IMAGE"
 
-log "Install complete. Rebooting..."
 sync
+sleep 5
+
+log "Install complete. Rebooting..."
+
 reboot
