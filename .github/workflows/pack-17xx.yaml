@@ -1,0 +1,103 @@
+name: Gemtek 17xx UBI Installer (repackaging)
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_packages:
+        description: 'Additional packages for inner build (space separated)'
+        default: 'luci'
+        required: false
+
+env:
+  IB_URL: https://downloads.openwrt.org/snapshots/targets/airoha/an7581/openwrt-imagebuilder-airoha-an7581.Linux-x86_64.tar.zst
+  IB_NAME: openwrt-imagebuilder-airoha-an7581.Linux-x86_64
+
+jobs:
+  build:
+    name: Build Installer for (${{ matrix.device }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: w1700k
+            profile: gemtek_w1700k-ubi
+            installer: openwrt-airoha-an7581-gemtek_w1700k-ubi-initramfs-installer.itb
+            files_dir: files.w1700k
+
+    steps:
+      - name: Checkout installer repository
+        uses: actions/checkout@main
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential cmake libfdt-dev device-tree-compiler cpio xz-utils u-boot-tools wget
+
+      - name: Setup Image Builder
+        run: |
+          wget -q ${{ env.IB_URL }}
+          tar -I zstd -xf *.tar.zst
+          mv ${{ env.IB_NAME }} ib
+
+      - name: Create Inner Build
+        run: |
+          cd ib
+          # Build the firmware that will actually live on the router
+          make image PROFILE=${{ matrix.profile }} PACKAGES="${{ github.event.inputs.extra_packages }}"
+          mkdir -p ../staging
+          cp bin/targets/airoha/an7581/*sysupgrade.itb ../staging/sysupgrade.itb
+          mkdir -p ../output
+          cp bin/targets/airoha/an7581/*u-boot.itb ../output/ || true
+
+      - name: Outer Build (Custom Installer)
+        run: |
+          # 1. Locate the Image Builder components
+          # These paths are standard within the IB after 'make image'
+          KERNEL_BIN=$(find ib/build_dir -name "*-kernel.bin" | head -n 1)
+          DTB_BIN=$(find ib/build_dir -name "image-*.dtb" | head -n 1)
+          RECOVERY_ITB=$(find ib/bin -name "*initramfs-recovery.itb" | head -n 1)
+          mkdir -p installer_work/initrd
+          cd installer_work
+          # 2. Extract official initramfs
+          # We use dumpimage to grab the first image component (the ramdisk)
+          dumpimage -i "$RECOVERY_ITB" -p 1 initrd.xz
+          xz -d < initrd.xz | cpio -i -D initrd/
+          # 3. Inject Installer payload and custom files
+          mkdir -p initrd/installer
+          cp ../staging/sysupgrade.itb initrd/installer/
+          # Copy installer files (scripts/preinit/etc)
+          if [ -d "../${{ matrix.files_dir }}" ]; then
+            cp -avr ../${{ matrix.files_dir }}/* initrd/
+          fi
+          chmod +x initrd/installer/*.sh initrd/lib/preinit/* || true
+          # 4. Patch Device Tree
+          dtc -I dtb -O dts -o temp.dts "$DTB_BIN"
+          # Disable wifi
+          sed -i '/&pcie[02] {/,/status = "okay";/ s/status = "okay";/status = "disabled";/' temp.dts
+          # Disable ubi mount
+          sed -i 's/"ubi"/"ibu"/g' temp.dts
+          dtc -I dts -O dtb -o installer.dtb temp.dts
+          # 5. Pack Installer Initramfs
+          cd initrd
+          find . | LC_ALL=C sort | cpio --reproducible -o -H newc -R 0:0 | xz -9 --check=crc32 > ../installer.initrd
+          cd ..
+          # 6. Generate ITS and Final ITB
+          chmod +x ../ib/scripts/mkits.sh
+          ../ib/scripts/mkits.sh \
+            -D "${{ matrix.profile }}" \
+            -o installer.its \
+            -k "$KERNEL_BIN" \
+            -C none \
+            -d ./installer.dtb \
+            -i ./installer.initrd \
+            -a 0x80200000 -e 0x80200000 \
+            -A arm64 -v "6.12"
+          # Use external data padding (-E) and alignment (-B) to match OpenWrt Build/fit
+          mkimage -E -B 0x1000 -f installer.its ../output/${{ matrix.installer }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@main
+        with:
+          name: ${{ matrix.device }}-installer
+          path: output/
