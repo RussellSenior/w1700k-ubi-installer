@@ -39,10 +39,17 @@ jobs:
           tar -I zstd -xf *.tar.zst
           mv ${{ env.IB_NAME }} ib
 
+      - name: Create skeleton rootfs
+        run: |
+          cd ib
+          make image PROFILE=${{ matrix.profile }}
+          IB_ROOT=$(find build_dir -name "root-airoha" -type d | head -n 1)
+          mkdir -p ../installer_skeleton
+          cp -pPR "$IB_ROOT/." ../installer_skeleton/
+
       - name: Create Inner Build
         run: |
           cd ib
-          # Build the firmware that will actually live on the router
           make image PROFILE=${{ matrix.profile }} PACKAGES="${{ github.event.inputs.extra_packages }}"
           mkdir -p ../staging
           cp bin/targets/airoha/an7581/*sysupgrade.itb ../staging/sysupgrade.itb
@@ -52,36 +59,30 @@ jobs:
       - name: Outer Build (Custom Installer)
         run: |
           # 1. Locate the Image Builder components
-          IB_SKELETON=$(find ib/build_dir -name "root.orig-airoha" -type d | head -n 1)
-          if [ -z "$IB_SKELETON" ]; then
-            IB_SKELETON=$(find ib/build_dir -name "root-airoha" -type d | head -n 1)
-          fi
           KERNEL_BIN=$(find ib/build_dir -name "*-kernel.bin" | head -n 1)
           DTB_BIN=$(find ib/build_dir -name "image-*.dtb" | head -n 1)
           mkdir -p installer_work/initrd
-          cd installer_work
-          # 2. Copy initrd skeleton
-          cp -pPR "$IB_SKELETON/." initrd/
-          # 3. Inject Installer payload and custom files
-          mkdir -p initrd/installer
-          cp ../staging/sysupgrade.itb initrd/installer/
-          # Copy installer files (scripts/preinit/etc)
-          if [ -d "../files" ]; then
-            cp -avr ../files/* initrd/
+          cp -pPR installer_skeleton/. installer_work/initrd/
+          # 2. Inject Installer payload and custom files
+          mkdir -p installer_work/initrd/installer
+          cp staging/sysupgrade.itb installer_work/initrd/installer/
+          if [ -d "files" ]; then
+            cp -pPR files/. installer_work/initrd/
           fi
-          chmod +x initrd/installer/*.sh initrd/lib/preinit/* || true
-          # 4. Patch Device Tree
+          chmod +x installer_work/initrd/installer/*.sh installer_work/initrd/lib/preinit/* || true
+          # 3. Patch Device Tree
+          cd installer_work
           dtc -I dtb -O dts -o temp.dts "$DTB_BIN"
           # Disable wifi
           sed -i '/&pcie[02] {/,/status = "okay";/ s/status = "okay";/status = "disabled";/' temp.dts
           # Disable ubi mount
           sed -i 's/"ubi"/"ibu"/g' temp.dts
           dtc -I dts -O dtb -o installer.dtb temp.dts
-          # 5. Pack Installer Initramfs
+          # 4. Pack Installer Initramfs
           cd initrd
           find . | LC_ALL=C sort | cpio --reproducible -o -H newc -R 0:0 | xz -9 --check=crc32 > ../installer.initrd
           cd ..
-          # 6. Generate ITS and Final ITB
+          # 5. Generate ITS and Final ITB
           chmod +x ../ib/scripts/mkits.sh
           ../ib/scripts/mkits.sh \
             -D "${{ matrix.profile }}" \
