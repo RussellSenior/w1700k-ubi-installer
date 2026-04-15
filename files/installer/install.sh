@@ -132,7 +132,7 @@ get_factory_eeprom() {
   fi
 
   log "found factory partition at offset $(printf %08x $((off)))"
-  dd if=/dev/mtd0 bs=1 skip="$off" count="$eeprom_len" of="$eeprom_dump"
+  dd if=/dev/mtd0 iflag=skip_bytes,fullblock skip="$off" bs="$eeprom_len" count=1 of="$eeprom_dump"
 }
 
 get_factory_macs() {
@@ -141,7 +141,7 @@ get_factory_macs() {
 
   [ -d "$FACTORY_TMP" ] || mkdir -p "$FACTORY_TMP"
 
-  dd if=/dev/mtd0 of="$DSD_BIN" bs=1 skip="$dsd_off" count="$dsd_len" 2>/dev/null
+  dd if=/dev/mtd0 iflag=skip_bytes,fullblock skip="$dsd_off" bs="$dsd_len" count=1 of="$DSD_BIN" 2>/dev/null
   strings "$DSD_BIN" > "$DSD_STR"
 
   WAN_MAC="$(get_dsd_value wan_mac "$DSD_STR")"
@@ -184,22 +184,22 @@ build_factory_volume() {
   eeprom_size="$(wc -c < "$eeprom_bin")"
 
   log "Creating empty factory blob (${FACTORY_SIZE} bytes)..."
-  dd if=/dev/zero of="$FACTORY_BLOB" bs=1 count="$FACTORY_SIZE" 2>/dev/null
+  dd if=/dev/zero of="$FACTORY_BLOB" bs="$FACTORY_SIZE" count=1 2>/dev/null
 
   log "Copying EEPROM (len 0x$(printf %x $eeprom_size)) -> blob @0x0..."
-  dd if="$eeprom_bin" of="$FACTORY_BLOB" bs=1 seek="$EEPROM_DST_OFF" count="$eeprom_size" conv=notrunc 2>/dev/null
+  dd if="$eeprom_bin" of="$FACTORY_BLOB" oflag=seek_bytes seek="$EEPROM_DST_OFF" bs="$eeprom_size" count=1 conv=notrunc 2>/dev/null
 
   log "Writing WAN/LAN MACs as hex bytes..."
   WAN_HEX="$(mac_to_hex "$WAN_MAC")"
   LAN_HEX="$(mac_to_hex "$LAN_MAC")"
-  printf "$(hex_to_bytes "$WAN_HEX")" | dd of="$FACTORY_BLOB" bs=1 seek="$WAN_MAC_OFF" conv=notrunc 2>/dev/null
-  printf "$(hex_to_bytes "$LAN_HEX")" | dd of="$FACTORY_BLOB" bs=1 seek="$LAN_MAC_OFF" conv=notrunc 2>/dev/null
+  printf "$(hex_to_bytes "$WAN_HEX")" | dd of="$FACTORY_BLOB" bs=1 oflag=seek_bytes seek="$WAN_MAC_OFF" conv=notrunc 2>/dev/null
+  printf "$(hex_to_bytes "$LAN_HEX")" | dd of="$FACTORY_BLOB" bs=1 oflag=seek_bytes seek="$LAN_MAC_OFF" conv=notrunc 2>/dev/null
 
   log "Writing fan_id and serial_number as hex bytes..."
   FAN_HEX="$(str_to_hex "$FAN_ID")"
   SER_HEX="$(str_to_hex "$SERIAL_NUMBER")"
-  printf "$(hex_to_bytes "$FAN_HEX")" | dd of="$FACTORY_BLOB" bs=1 seek="$FAN_ID_OFF" conv=notrunc 2>/dev/null
-  printf "$(hex_to_bytes "$SER_HEX")" | dd of="$FACTORY_BLOB" bs=1 seek="$SERIAL_OFF" conv=notrunc 2>/dev/null
+  printf "$(hex_to_bytes "$FAN_HEX")" | dd of="$FACTORY_BLOB" bs=1 oflag=seek_bytes seek="$FAN_ID_OFF" conv=notrunc 2>/dev/null
+  printf "$(hex_to_bytes "$SER_HEX")" | dd of="$FACTORY_BLOB" bs=1 oflag=seek_bytes seek="$SERIAL_OFF" conv=notrunc 2>/dev/null
 
   log "Factory volume built at $FACTORY_BLOB ."
   cp "$FACTORY_BLOB" "$factory_bin_path"
